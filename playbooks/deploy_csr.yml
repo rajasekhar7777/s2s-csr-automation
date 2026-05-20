@@ -1,3 +1,4 @@
+
 ---
 - name: Deploy route-based IKEv2 VPN tunnel on Cisco CSR
   hosts: "{{ target_host | default('csr_routers') }}"
@@ -5,53 +6,67 @@
   connection: ansible.netcommon.network_cli
 
   vars:
-    # ---- defaults (overridden by AWX survey / ADO --extra-vars / CLI -e) ----
-    keyring_name: ""
-    profile_name: ""
-    ipsec_profile_name: ""
-    acl_name: ""
-    csr_pl_name: "CSR_LIST"
-    routing_type: "static"             # static | dynamic
-    match_identity_remote_type: "address"   # address | fqdn
+    # ----- crypto / identity defaults (overridden by AWX/ADO/CLI) -----
+    keyring_name:                ""
+    profile_name:                ""
+    ipsec_profile_name:          ""
+    acl_name:                    ""
+    csr_pl_name:                 "CSR_LIST"
+    routing_type:                "static"          # static | dynamic
+    match_identity_remote_type:  "address"         # address | fqdn
     match_identity_remote_value: ""
-    identity_local_type: ""            # address | fqdn | ""
-    identity_local_value: ""
-    ikev2_lifetime: 28800
-    static_remote_networks: []
-    inbound_prefixes: []
-    outbound_prefixes: []
-    enable_bgp: "false"
+    identity_local_type:         ""                # address | fqdn | ""
+    identity_local_value:        ""
+    ikev2_lifetime:              28800
+
+    # ----- routing / advertisement -----
+    local_networks:              []                # list[str cidr] OR list[dict] OR multi-line str
+    pl_next_seq:                 100               # CSR_LIST starting seq
+    csr_pl_lege:                 ""                # optional " le 32" / " ge 24"
+
+    # ----- BGP (used when routing_type == 'dynamic') -----
+    inbound_prefixes:            []
+    outbound_prefixes:           []
+    local_asn:                   65000
+    remote_asn:                  65001
+    bgp_neighbor_ip:             ""                # blank -> falls back to tunnel_remote_ip
+    bgp_password:                ""
 
   tasks:
 
     - name: Validate required inputs
       ansible.builtin.assert:
         that:
-          - tunnel_id           is defined and (tunnel_id | int) > 0
-          - tunnel_desc         is defined and (tunnel_desc | length) > 0
-          - remote_peer_ip      is defined and (remote_peer_ip | length) > 0
-          - vpn_psk             is defined and (vpn_psk | length) > 0
-          - tunnel_local_ip     is defined and (tunnel_local_ip | length) > 0
-          - tunnel_remote_ip    is defined and (tunnel_remote_ip | length) > 0
+          - tunnel_id        is defined and (tunnel_id | int) > 0
+          - tunnel_desc      is defined and (tunnel_desc | length) > 0
+          - remote_peer_ip   is defined and (remote_peer_ip | length) > 0
+          - vpn_psk          is defined and (vpn_psk | length) > 0
+          - tunnel_local_ip  is defined and (tunnel_local_ip | length) > 0
+          - tunnel_remote_ip is defined and (tunnel_remote_ip | length) > 0
         fail_msg: "Missing required tunnel parameters."
 
-    - name: Normalise survey values into extra-vars-safe eff_* facts
+    - name: Normalise survey values into eff_* facts
       ansible.builtin.set_fact:
-        eff_keyring_name:                 "{{ keyring_name                 | default('', true) | trim }}"
-        eff_profile_name:                 "{{ profile_name                 | default('', true) | trim }}"
-        eff_ipsec_profile_name:           "{{ ipsec_profile_name           | default('', true) | trim }}"
-        eff_acl_name:                     "{{ acl_name                     | default('', true) | trim }}"
-        eff_csr_pl_name:                  "{{ csr_pl_name                  | default('CSR_LIST', true) | trim }}"
-        eff_routing_type:                 "{{ routing_type                 | default('static', true) | lower | trim }}"
-        eff_match_identity_remote_type:   "{{ match_identity_remote_type   | default('address', true) | lower | trim }}"
-        eff_match_identity_remote_value:  "{{ match_identity_remote_value  | default('', true) | trim }}"
-        eff_identity_local_type:          "{{ identity_local_type          | default('', true) | lower | trim }}"
-        eff_identity_local_value:         "{{ identity_local_value         | default('', true) | trim }}"
-        eff_ikev2_lifetime:               "{{ ikev2_lifetime               | default(28800, true) | int }}"
-        eff_wan_interface:                "{{ wan_interface                | default('GigabitEthernet1', true) | trim }}"
-        eff_wan_gateway:                  "{{ wan_gateway                  | default('10.138.1.1', true) | trim }}"
+        eff_keyring_name:                "{{ keyring_name                | default('', true) | trim }}"
+        eff_profile_name:                "{{ profile_name                | default('', true) | trim }}"
+        eff_ipsec_profile_name:          "{{ ipsec_profile_name          | default('', true) | trim }}"
+        eff_acl_name:                    "{{ acl_name                    | default('', true) | trim }}"
+        eff_csr_pl_name:                 "{{ csr_pl_name                 | default('CSR_LIST', true) | trim }}"
+        eff_routing_type:                "{{ routing_type                | default('static', true) | lower | trim }}"
+        eff_match_identity_remote_type:  "{{ match_identity_remote_type  | default('address', true) | lower | trim }}"
+        eff_match_identity_remote_value: "{{ match_identity_remote_value | default('', true) | trim }}"
+        eff_identity_local_type:         "{{ identity_local_type         | default('', true) | lower | trim }}"
+        eff_identity_local_value:        "{{ identity_local_value        | default('', true) | trim }}"
+        eff_ikev2_lifetime:              "{{ ikev2_lifetime              | default(28800, true) | int }}"
+        eff_wan_interface:               "{{ wan_interface               | default('GigabitEthernet1', true) | trim }}"
+        eff_wan_gateway:                 "{{ wan_gateway                 | default('10.138.1.1', true) | trim }}"
+        eff_pl_next_seq:                 "{{ pl_next_seq                 | default(100, true) | int }}"
+        eff_csr_pl_lege:                 "{{ csr_pl_lege                 | default('', true) | trim }}"
+        eff_local_asn:                   "{{ local_asn                   | default(65000, true) | int }}"
+        eff_bgp_password:                "{{ bgp_password                | default('', true) }}"
+        eff_bgp_neighbor_ip:             "{{ bgp_neighbor_ip             | default(tunnel_remote_ip, true) | trim }}"
 
-    - name: Build safe descriptor (no spaces/special chars)
+    - name: Build safe descriptor (no spaces / special chars)
       ansible.builtin.set_fact:
         safe_desc: "{{ tunnel_desc | regex_replace('[^A-Za-z0-9_]', '_') }}"
 
@@ -62,27 +77,65 @@
         effective_ipsec_profile_name: "{{ eff_ipsec_profile_name if (eff_ipsec_profile_name | length) > 0 else ('IPSEC_PROF_T' ~ tunnel_id) }}"
         effective_acl_name:           "{{ eff_acl_name           if (eff_acl_name           | length) > 0 else safe_desc }}"
 
+    # ---------- Normalise local_networks to a single canonical shape ----------
+    - name: Build raw local_networks list (string -> splitlines, list -> as-is)
+      ansible.builtin.set_fact:
+        ln_raw: >-
+          {{
+            (local_networks.splitlines() | map('trim') | reject('equalto','') | list)
+            if (local_networks is string)
+            else (local_networks | default([], true))
+          }}
+
+    - name: Canonicalise local_networks entries -> [{network, mask, bits}]
+      ansible.builtin.set_fact:
+        eff_local_networks: "{{ _ln_out }}"
+      vars:
+        _ln_out: >-
+          {%- set out = [] -%}
+          {%- for item in ln_raw -%}
+          {%-   if item is mapping -%}
+          {%-     set bits = (item.network ~ '/' ~ item.mask) | ipaddr('prefix') -%}
+          {%-     set _ = out.append({'network': item.network, 'mask': item.mask, 'bits': bits | int}) -%}
+          {%-   else -%}
+          {%-     set s = item | string | trim -%}
+          {%-     if '/' in s -%}
+          {%-       set net  = s.split('/')[0] -%}
+          {%-       set bits = s.split('/')[1] | int -%}
+          {%-       set mask = (s | ipaddr('netmask')) -%}
+          {%-       set _ = out.append({'network': net, 'mask': mask, 'bits': bits}) -%}
+          {%-     elif ' ' in s -%}
+          {%-       set p = s.split() -%}
+          {%-       set bits = (p[0] ~ '/' ~ p[1]) | ipaddr('prefix') -%}
+          {%-       set _ = out.append({'network': p[0], 'mask': p[1], 'bits': bits | int}) -%}
+          {%-     endif -%}
+          {%-   endif -%}
+          {%- endfor -%}
+          {{ out }}
+
     - name: Show effective values (debug)
       ansible.builtin.debug:
         msg:
-          - "host                     = {{ inventory_hostname }}"
-          - "wan_interface            = {{ eff_wan_interface }}"
-          - "wan_gateway              = {{ eff_wan_gateway }}"
-          - "keyring                  = {{ effective_keyring_name }}"
-          - "profile                  = {{ effective_profile_name }}"
-          - "ipsec_profile            = {{ effective_ipsec_profile_name }}"
-          - "acl                      = {{ effective_acl_name }}"
-          - "routing_type             = {{ eff_routing_type }}"
-          - "match identity remote    = {{ eff_match_identity_remote_type }} {{ eff_match_identity_remote_value }}"
-          - "identity local           = {{ eff_identity_local_type }} {{ eff_identity_local_value }}"
-          - "ikev2 lifetime           = {{ eff_ikev2_lifetime }}"
+          - "host                  = {{ inventory_hostname }}"
+          - "wan_interface / gw    = {{ eff_wan_interface }} / {{ eff_wan_gateway }}"
+          - "keyring               = {{ effective_keyring_name }}"
+          - "profile               = {{ effective_profile_name }}"
+          - "ipsec_profile         = {{ effective_ipsec_profile_name }}"
+          - "routing_type          = {{ eff_routing_type }}"
+          - "ikev2 lifetime        = {{ eff_ikev2_lifetime }}"
+          - "match identity remote = {{ eff_match_identity_remote_type }} {{ eff_match_identity_remote_value }}"
+          - "identity local        = {{ eff_identity_local_type }} {{ eff_identity_local_value }}"
+          - "local_networks        = {{ eff_local_networks }}"
+          - "csr_pl_name / lege    = {{ eff_csr_pl_name }} / '{{ eff_csr_pl_lege }}'"
+          - "pl_next_seq           = {{ eff_pl_next_seq }}"
+          - "bgp neighbor / ASN    = {{ eff_bgp_neighbor_ip }} / {{ eff_local_asn }} (remote {{ remote_asn | default('-') }})"
 
     - name: Push tunnel configuration
       cisco.ios.ios_config:
         src: "../templates/IKEV2_route_based_vpn.j2"
         save_when: modified
 
-    - name: Enforce IKEv2 profile children (idempotency safety)
+    - name: Enforce IKEv2 profile children (idempotency)
       cisco.ios.ios_config:
         parents: "crypto ikev2 profile {{ effective_profile_name }}"
         lines:
