@@ -1,39 +1,64 @@
 {# ====================================================================
    IKEv2 / IPsec route-based VPN tunnel
-   - IKE version 2 (hard-coded)
-   - Route-based (Tunnel interface, hard-coded)
-   - wan interface / gateway come from inventory (eff_wan_*)
+   Hard-coded:  IKE version 2, route-based mode (Tunnel iface)
+   From inventory: eff_wan_interface, eff_wan_gateway (per-host)
    ==================================================================== #}
 
-{# ---------- Crypto: keyring ---------- #}
+{%- set _octet_bits = {'0':0,'128':1,'192':2,'224':3,'240':4,'248':5,'252':6,'254':7,'255':8} -%}
+{%- set ln_entries = [] -%}
+{%- if local_networks is defined and (local_networks | length) > 0 -%}
+{%-   for raw in local_networks.splitlines() -%}
+{%-     set line = raw | trim -%}
+{%-     if (line | length) > 0 -%}
+{%-       if '/' in line and (line.split() | length) == 1 -%}
+{%-         set net  = line.split('/')[0] -%}
+{%-         set bits = line.split('/')[1] | int -%}
+{%-         set full = (bits // 8) -%}
+{%-         set rem  = (bits %  8) -%}
+{%-         set _t   = {0:'0',1:'128',2:'192',3:'224',4:'240',5:'248',6:'252',7:'254',8:'255'} -%}
+{%-         set parts = [] -%}
+{%-         for i in range(4) -%}
+{%-           if i < full -%}{% set _ = parts.append('255') %}
+{%-           elif i == full -%}{% set _ = parts.append(_t[rem]) %}
+{%-           else -%}{% set _ = parts.append('0') %}{%- endif -%}
+{%-         endfor -%}
+{%-         set _ = ln_entries.append({'net': net, 'mask': parts | join('.'), 'bits': bits}) -%}
+{%-       elif (line.split() | length) >= 2 -%}
+{%-         set p  = line.split() -%}
+{%-         set mo = p[1].split('.') -%}
+{%-         if (mo | length) == 4 -%}
+{%-           set b = _octet_bits.get(mo[0],0) + _octet_bits.get(mo[1],0) + _octet_bits.get(mo[2],0) + _octet_bits.get(mo[3],0) -%}
+{%-           set _ = ln_entries.append({'net': p[0], 'mask': p[1], 'bits': b}) -%}
+{%-         endif -%}
+{%-       endif -%}
+{%-     endif -%}
+{%-   endfor -%}
+{%- endif -%}
+
 crypto ikev2 keyring {{ effective_keyring_name }}
  peer {{ safe_desc }}
   address {{ remote_peer_ip }}
   pre-shared-key {{ vpn_psk }}
 !
-
-{# ---------- Crypto: IKEv2 profile ---------- #}
 crypto ikev2 profile {{ effective_profile_name }}
 {%- if eff_match_identity_remote_type == 'address' %}
- match identity remote address {{ eff_match_identity_remote_value | default(remote_peer_ip, true) }} 255.255.255.255
+ match identity remote address {{ eff_match_identity_remote_value if (eff_match_identity_remote_value | length) > 0 else remote_peer_ip }} 255.255.255.255
 {%- else %}
  match identity remote fqdn {{ eff_match_identity_remote_value }}
-{%- endif %}
-{%- if (eff_identity_local_type | length) > 0 and (eff_identity_local_value | length) > 0 %}
-{%- if eff_identity_local_type == 'address' %}
- identity local address {{ eff_identity_local_value }}
-{%- else %}
- identity local fqdn {{ eff_identity_local_value }}
-{%- endif %}
 {%- endif %}
  authentication remote pre-share
  authentication local pre-share
  keyring local {{ effective_keyring_name }}
+{%- if (eff_identity_local_type | length) > 0 and (eff_identity_local_value | length) > 0 %}
+{%-   if eff_identity_local_type == 'address' %}
+ identity local address {{ eff_identity_local_value }}
+{%-   else %}
+ identity local fqdn {{ eff_identity_local_value }}
+{%-   endif %}
+{%- endif %}
  lifetime {{ eff_ikev2_lifetime }}
  dpd 10 5 on-demand
 !
-
-{# ---------- Transform-set + IPsec profile ---------- #}
 crypto ipsec transform-set AES256-SHA256 esp-aes 256 esp-sha256-hmac
  mode tunnel
 !
@@ -43,75 +68,68 @@ crypto ipsec profile {{ effective_ipsec_profile_name }}
  set ikev2-profile {{ effective_profile_name }}
 !
 
-{# ---------- ACL (lines emitted as-is, no auto-numbering) ---------- #}
-{%- if (eff_acl_lines | length) > 0 %}
+{%- if acl_entries is defined and (acl_entries | length) > 0 %}
+{%- set acl_lines = acl_entries.splitlines() | map('trim') | reject('equalto','') | list %}
 ip access-list extended {{ effective_acl_name }}
-{%- for line in eff_acl_lines %}
+{%- for line in acl_lines %}
  {{ line }}
 {%- endfor %}
 !
 {%- endif %}
 
-{# ---------- Tunnel interface ---------- #}
 interface Tunnel{{ tunnel_id }}
- description {{ tunnel_desc }}
- ip address {{ tunnel_local_ip }} {{ tunnel_mask | default('255.255.255.252', true) }}
+ description {{ eff_tunnel_desc }}
+ ip address {{ tunnel_local_ip }} 255.255.255.252
  ip mtu 1400
  ip tcp adjust-mss 1360
  tunnel source {{ eff_wan_interface }}
  tunnel mode ipsec ipv4
  tunnel destination {{ remote_peer_ip }}
  tunnel protection ipsec profile {{ effective_ipsec_profile_name }}
-{%- if (eff_acl_lines | length) > 0 %}
+{%- if acl_entries is defined and (acl_entries | length) > 0 %}
  ip access-group {{ effective_acl_name }} in
 {%- endif %}
  no shutdown
 !
-
-{# ---------- WAN host-route to peer ---------- #}
 ip route {{ remote_peer_ip }} 255.255.255.255 {{ eff_wan_gateway }} name WAN_ROUTE_{{ safe_desc }}
 !
-
-{# ---------- IP SLA + track ---------- #}
 ip sla {{ tunnel_id }}
- icmp-echo {{ tunnel_remote_ip }} source-interface Tunnel{{ tunnel_id }}
+ icmp-echo {{ effective_sla_target }} source-interface Tunnel{{ tunnel_id }}
  frequency 10
- threshold 2000
- timeout 3000
 ip sla schedule {{ tunnel_id }} life forever start-time now
 !
 track {{ tunnel_id }} ip sla {{ tunnel_id }} reachability
 !
 
-{# ---------- Static routes (only if routing_type == static) ---------- #}
-{%- if eff_routing_type == 'static' and (eff_local_networks | length) > 0 %}
-{%- for e in eff_local_networks %}
-ip route {{ e.network }} {{ e.mask }} Tunnel{{ tunnel_id }} name {{ safe_desc }}_NET{{ loop.index }}
+{%- if routing_type == 'static' and (ln_entries | length) > 0 %}
+{%- for e in ln_entries %}
+ip route {{ e.net }} {{ e.mask }} Tunnel{{ tunnel_id }} name {{ safe_desc }}_NET{{ loop.index }}
 {%- endfor %}
 !
 {%- endif %}
 
-{# ---------- CSR_LIST prefix-list ---------- #}
-{%- if (eff_local_networks | length) > 0 %}
-{%- for e in eff_local_networks %}
-ip prefix-list {{ eff_csr_pl_name }} seq {{ (eff_pl_next_seq | int) + (loop.index0 * 5) }} permit {{ e.network }}/{{ e.bits }}{% if (eff_csr_pl_lege | length) > 0 %} {{ eff_csr_pl_lege }}{% endif %}
+{%- if (ln_entries | length) > 0 %}
+{%- for e in ln_entries %}
+ip prefix-list {{ eff_csr_pl_name }} seq {{ (pl_next_seq | int) + (loop.index0 * 5) }} permit {{ e.net }}/{{ e.bits }}{% if csr_pl_lege is defined and (csr_pl_lege | trim | length) > 0 %} {{ csr_pl_lege | trim }}{% endif %}
 {%- endfor %}
 !
 {%- endif %}
 
-{# ---------- Dynamic-only filter machinery ---------- #}
-{%- if eff_routing_type == 'dynamic' and (inbound_prefixes | default([]) | length) > 0 %}
-{%- for p in inbound_prefixes %}
-ip prefix-list PL_IN_T{{ tunnel_id }} seq {{ loop.index * 5 }} permit {{ p }}
+{%- if routing_type == 'dynamic' and (inbound_prefixes is defined) and ((inbound_prefixes | default('') | length) > 0) %}
+{%- set in_pfx = inbound_prefixes.splitlines() | map('trim') | reject('equalto','') | list %}
+{%- for prefix in in_pfx %}
+ip prefix-list PL_IN_T{{ tunnel_id }} seq {{ loop.index * 5 }} permit {{ prefix }}
 {%- endfor %}
 !
 route-map RM_IN_T{{ tunnel_id }} permit 10
  match ip address prefix-list PL_IN_T{{ tunnel_id }}
 !
 {%- endif %}
-{%- if eff_routing_type == 'dynamic' and (outbound_prefixes | default([]) | length) > 0 %}
-{%- for p in outbound_prefixes %}
-ip prefix-list PL_OUT_T{{ tunnel_id }} seq {{ loop.index * 5 }} permit {{ p }}
+
+{%- if routing_type == 'dynamic' and (outbound_prefixes is defined) and ((outbound_prefixes | default('') | length) > 0) %}
+{%- set out_pfx = outbound_prefixes.splitlines() | map('trim') | reject('equalto','') | list %}
+{%- for prefix in out_pfx %}
+ip prefix-list PL_OUT_T{{ tunnel_id }} seq {{ loop.index * 5 }} permit {{ prefix }}
 {%- endfor %}
 !
 route-map RM_OUT_T{{ tunnel_id }} permit 10
@@ -119,34 +137,33 @@ route-map RM_OUT_T{{ tunnel_id }} permit 10
 !
 {%- endif %}
 
-{# ---------- BGP (in-template, whitespace-stripped to keep parent context) ---------- #}
-{%- set want_bgp = (eff_routing_type == 'dynamic') or ((eff_local_networks | length) > 0) %}
+{%- set want_bgp = (routing_type == 'dynamic') or ((ln_entries | length) > 0) %}
 {%- if want_bgp %}
 router bgp {{ eff_local_asn }}
  bgp log-neighbor-changes
-{%- if eff_routing_type == 'dynamic' %}
- neighbor {{ eff_bgp_neighbor_ip }} remote-as {{ eff_remote_asn }}
- neighbor {{ eff_bgp_neighbor_ip }} description BGP_TO_{{ safe_desc }}
- neighbor {{ eff_bgp_neighbor_ip }} update-source Tunnel{{ tunnel_id }}
- neighbor {{ eff_bgp_neighbor_ip }} timers 10 30 30
- neighbor {{ eff_bgp_neighbor_ip }} ebgp-multihop 10
-{%- if (eff_bgp_password | length) > 0 %}
- neighbor {{ eff_bgp_neighbor_ip }} password {{ eff_bgp_password }}
-{%- endif %}
+{%- if routing_type == 'dynamic' %}
+ neighbor {{ bgp_neighbor_ip }} remote-as {{ remote_asn }}
+ neighbor {{ bgp_neighbor_ip }} description BGP_TO_{{ safe_desc }}
+ neighbor {{ bgp_neighbor_ip }} update-source Tunnel{{ tunnel_id }}
+ neighbor {{ bgp_neighbor_ip }} timers 10 30 30
+ neighbor {{ bgp_neighbor_ip }} ebgp-multihop 10
+{%-   if bgp_password is defined and (bgp_password | length) > 0 %}
+ neighbor {{ bgp_neighbor_ip }} password {{ bgp_password }}
+{%-   endif %}
 {%- endif %}
  address-family ipv4
-{%- for e in eff_local_networks %}
-  network {{ e.network }} mask {{ e.mask }}
+{%- for e in ln_entries %}
+  network {{ e.net }} mask {{ e.mask }}
 {%- endfor %}
-{%- if eff_routing_type == 'dynamic' %}
-  neighbor {{ eff_bgp_neighbor_ip }} activate
-  neighbor {{ eff_bgp_neighbor_ip }} soft-reconfiguration inbound
-{%- if (inbound_prefixes  | default([]) | length) > 0 %}
-  neighbor {{ eff_bgp_neighbor_ip }} route-map RM_IN_T{{ tunnel_id }} in
-{%- endif %}
-{%- if (outbound_prefixes | default([]) | length) > 0 %}
-  neighbor {{ eff_bgp_neighbor_ip }} route-map RM_OUT_T{{ tunnel_id }} out
-{%- endif %}
+{%- if routing_type == 'dynamic' %}
+  neighbor {{ bgp_neighbor_ip }} activate
+  neighbor {{ bgp_neighbor_ip }} soft-reconfiguration inbound
+{%-   if (inbound_prefixes  | default('') | length) > 0 %}
+  neighbor {{ bgp_neighbor_ip }} route-map RM_IN_T{{ tunnel_id }} in
+{%-   endif %}
+{%-   if (outbound_prefixes | default('') | length) > 0 %}
+  neighbor {{ bgp_neighbor_ip }} route-map RM_OUT_T{{ tunnel_id }} out
+{%-   endif %}
 {%- endif %}
  exit-address-family
 !
