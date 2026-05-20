@@ -1,11 +1,33 @@
+# inventory/group_vars/csr_routers.yml
 ---
-ansible_connection: ansible.netcommon.network_cli
-ansible_network_os: cisco.ios.ios
-ansible_become: true
-ansible_become_method: enable
+# ============================================================================
+#  Connection plumbing for all Cisco CSRs (single source of truth).
+#  Do NOT duplicate any of these keys in inventory/hosts.yml or host_vars/.
+# ============================================================================
 
-# Credentials are injected by AWX credential / ADO variable group — never hard-code.
-# ansible_user / ansible_password / ansible_become_password come from there.
+# --- Connection ---
+ansible_connection:             ansible.netcommon.network_cli
+ansible_network_os:             cisco.ios.ios
+ansible_network_cli_ssh_type:   paramiko        # paramiko supports legacy KEX (group14-sha1) used by IOS
 
-# Defaults; per-host files override.
-eff_wan_interface_default: GigabitEthernet1
+# --- Privilege escalation (enable mode) ---
+ansible_become:                 true
+ansible_become_method:          enable
+
+# --- SSH behaviour ---
+ansible_host_key_checking:      false
+ansible_command_timeout:        100
+ansible_connect_timeout:        100
+
+# ----------------------------------------------------------------------------
+#  Credentials are injected by:
+#    AWX  -> Machine Credential   (ansible_user / ansible_password / ansible_become_password)
+#    ADO  -> Variable Group       (same three vars, marked secret)
+#    CLI  -> -e "ansible_user=... ansible_password=... ansible_become_password=..."
+#  NEVER hard-code credentials in this file or in git.
+# ----------------------------------------------------------------------------
+
+# --- Site-wide defaults (optional helpers) ---
+eff_wan_interface_default:      GigabitEthernet1
+
+
