@@ -1,0 +1,52 @@
+{# ====================================================================
+   Policy-based IKEv2 / IPsec VPN  (single peer, symmetric PSK)
+   Hard-coded:  crypto map name = MYMAP, WAN interface = GigabitEthernet1
+                (WAN interface still parameterised for multi-site inventory)
+==================================================================== #}
+
+{# ---------- Keyring ---------- #}
+crypto ikev2 keyring {{ effective_keyring_name }}
+{% for p in peers_list %}
+ peer {{ p.name }}
+  address {{ p.address }}
+  pre-shared-key {{ p.psk }}
+ exit
+{% endfor %}
+!
+
+{# ---------- IKEv2 profile ---------- #}
+crypto ikev2 profile {{ effective_profile_name }}
+ match identity remote address {{ remote_peer_ip }} 255.255.255.255
+ authentication remote pre-share
+ authentication local pre-share
+ keyring local {{ effective_keyring_name }}
+ lifetime {{ eff_ikev2_lifetime | default(28800, true) }}
+ dpd 10 5 on-demand
+!
+
+{# ---------- Transform set & IPsec profile ---------- #}
+crypto ipsec transform-set TS-AES256-SHA256 esp-aes 256 esp-sha256-hmac
+ mode tunnel
+!
+
+{# ---------- ACL (interesting traffic) ---------- #}
+ip access-list extended {{ effective_acl_name }}
+{% for line in acl_lines %}
+ {{ loop.index * 10 }} permit ip {{ line.src_net }} {{ line.src_wild }} {{ line.dst_net }} {{ line.dst_wild }}
+{% endfor %}
+!
+
+{# ---------- Crypto map ---------- #}
+crypto map {{ eff_crypto_map_name }} {{ crypto_map_id }} ipsec-isakmp
+ description {{ eff_crypto_map_desc }}
+ set peer {{ remote_peer_ip }}
+ set transform-set TS-AES256-SHA256
+ set pfs group20
+ set ikev2-profile {{ effective_profile_name }}
+ match address {{ effective_acl_name }}
+!
+
+{# ---------- Apply crypto map to WAN ---------- #}
+interface {{ eff_wan_interface }}
+ crypto map {{ eff_crypto_map_name }}
+!

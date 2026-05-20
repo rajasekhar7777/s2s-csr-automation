@@ -1,0 +1,75 @@
+---
+- name: Deploy policy-based IKEv2/IPsec VPN on Cisco CSR
+  hosts: "{{ target_host | default('csr_routers') }}"
+  gather_facts: false
+  connection: ansible.netcommon.network_cli
+
+  vars:
+    keyring_name: ""
+    profile_name: ""
+    acl_name: ""
+    ikev2_lifetime: 28800
+    acl_lines: []
+    crypto_map_desc: ""
+
+  tasks:
+
+    - name: Validate required inputs
+      ansible.builtin.assert:
+        that:
+          - crypto_map_id      is defined and (crypto_map_id | int) > 0
+          - crypto_map_desc    is defined and (crypto_map_desc | length) > 0
+          - remote_peer_ip     is defined and (remote_peer_ip | length) > 0
+          - vpn_psk            is defined and (vpn_psk | length) > 0
+          - acl_lines          is iterable and (acl_lines | length) > 0
+        fail_msg: "Missing required policy-based VPN inputs."
+
+    - name: Normalise into eff_* facts
+      ansible.builtin.set_fact:
+        eff_crypto_map_name:  "MYMAP"                                  # hard-coded
+        eff_wan_interface:    "{{ wan_interface  | default('GigabitEthernet1', true) | trim }}"
+        eff_wan_gateway:      "{{ wan_gateway    | default('10.138.1.1', true) | trim }}"
+        eff_crypto_map_desc:  "{{ crypto_map_desc | trim }}"
+        eff_vpn_psk:          "{{ vpn_psk }}"
+        eff_keyring_name:     "{{ keyring_name | default('', true) | trim }}"
+        eff_profile_name:     "{{ profile_name | default('', true) | trim }}"
+        eff_acl_name:         "{{ acl_name     | default('', true) | trim }}"
+        eff_ikev2_lifetime:   "{{ ikev2_lifetime | default(28800, true) | int }}"
+
+    - name: Safe descriptor
+      ansible.builtin.set_fact:
+        safe_desc: "{{ eff_crypto_map_desc | regex_replace('[^A-Za-z0-9_]', '_') }}"
+
+    - name: Compute effective names
+      ansible.builtin.set_fact:
+        effective_keyring_name: "{{ eff_keyring_name if (eff_keyring_name | length) > 0 else ('KEYRING_' ~ safe_desc ~ '_M' ~ crypto_map_id) }}"
+        effective_profile_name: "{{ eff_profile_name if (eff_profile_name | length) > 0 else ('PROF_'    ~ safe_desc ~ '_M' ~ crypto_map_id) }}"
+        effective_acl_name:     "{{ eff_acl_name     if (eff_acl_name     | length) > 0 else ('ACL_'     ~ safe_desc) }}"
+
+    - name: Build peers_list (single peer, symmetric PSK)
+      ansible.builtin.set_fact:
+        peers_list:
+          - name:    "{{ safe_desc }}"
+            address: "{{ remote_peer_ip }}"
+            psk:     "{{ eff_vpn_psk }}"
+
+    - name: Push policy-based VPN configuration
+      cisco.ios.ios_config:
+        src: "../templates/IKEV2_policy_based_vpn.j2"
+        save_when: modified
+
+    - name: Verify — crypto map entry
+      cisco.ios.ios_command:
+        commands: "show running-config | section crypto map {{ eff_crypto_map_name }} {{ crypto_map_id }}"
+      register: cm_show
+
+    - name: Verify — crypto map attached to WAN
+      cisco.ios.ios_command:
+        commands: "show running-config interface {{ eff_wan_interface }}"
+      register: wan_show
+
+    - name: Result
+      ansible.builtin.debug:
+        msg:
+          - "{{ cm_show.stdout_lines }}"
+          - "{{ wan_show.stdout_lines }}"

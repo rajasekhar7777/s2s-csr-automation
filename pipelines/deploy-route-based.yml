@@ -1,0 +1,58 @@
+trigger: none
+
+parameters:
+  - name: target_host
+    type: string
+    default: csr_routers
+  - name: tunnel_id
+    type: number
+  - name: tunnel_desc
+    type: string
+  - name: remote_peer_ip
+    type: string
+  - name: tunnel_local_ip
+    type: string
+  - name: tunnel_remote_ip
+    type: string
+  - name: routing_type
+    type: string
+    default: static
+    values: [static, dynamic]
+  - name: ikev2_lifetime
+    type: number
+    default: 28800
+
+variables:
+  - group: csr-credentials   # ansible_user / ansible_password / ansible_become_password
+
+pool:
+  name: production-network-agents   # local ADO agent
+
+steps:
+  - checkout: self
+
+  - script: |
+      python -m pip install --upgrade pip
+      pip install "ansible-core>=2.15"
+      ansible-galaxy collection install -r requirements.yml
+    displayName: Install Ansible + collections
+
+  - script: |
+      ansible-playbook \
+        -i inventory/hosts.yml \
+        -l ${{ parameters.target_host }} \
+        -e "tunnel_id=${{ parameters.tunnel_id }}" \
+        -e "tunnel_desc=${{ parameters.tunnel_desc }}" \
+        -e "remote_peer_ip=${{ parameters.remote_peer_ip }}" \
+        -e "tunnel_local_ip=${{ parameters.tunnel_local_ip }}" \
+        -e "tunnel_remote_ip=${{ parameters.tunnel_remote_ip }}" \
+        -e "routing_type=${{ parameters.routing_type }}" \
+        -e "ikev2_lifetime=${{ parameters.ikev2_lifetime }}" \
+        -e "vpn_psk=$(VPN_PSK)" \
+        -e "ansible_user=$(ansible_user)" \
+        -e "ansible_password=$(ansible_password)" \
+        -e "ansible_become_password=$(ansible_become_password)" \
+        playbooks/deploy_csr.yml
+    displayName: Deploy route-based VPN
+    env:
+      ANSIBLE_FORCE_COLOR: "1"

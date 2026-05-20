@@ -1,0 +1,102 @@
+---
+- name: Deploy route-based IKEv2 VPN tunnel on Cisco CSR
+  hosts: "{{ target_host | default('csr_routers') }}"
+  gather_facts: false
+  connection: ansible.netcommon.network_cli
+
+  vars:
+    # ---- defaults (overridden by AWX survey / ADO --extra-vars / CLI -e) ----
+    keyring_name: ""
+    profile_name: ""
+    ipsec_profile_name: ""
+    acl_name: ""
+    csr_pl_name: "CSR_LIST"
+    routing_type: "static"             # static | dynamic
+    match_identity_remote_type: "address"   # address | fqdn
+    match_identity_remote_value: ""
+    identity_local_type: ""            # address | fqdn | ""
+    identity_local_value: ""
+    ikev2_lifetime: 28800
+    static_remote_networks: []
+    inbound_prefixes: []
+    outbound_prefixes: []
+    enable_bgp: "false"
+
+  tasks:
+
+    - name: Validate required inputs
+      ansible.builtin.assert:
+        that:
+          - tunnel_id           is defined and (tunnel_id | int) > 0
+          - tunnel_desc         is defined and (tunnel_desc | length) > 0
+          - remote_peer_ip      is defined and (remote_peer_ip | length) > 0
+          - vpn_psk             is defined and (vpn_psk | length) > 0
+          - tunnel_local_ip     is defined and (tunnel_local_ip | length) > 0
+          - tunnel_remote_ip    is defined and (tunnel_remote_ip | length) > 0
+        fail_msg: "Missing required tunnel parameters."
+
+    - name: Normalise survey values into extra-vars-safe eff_* facts
+      ansible.builtin.set_fact:
+        eff_keyring_name:                 "{{ keyring_name                 | default('', true) | trim }}"
+        eff_profile_name:                 "{{ profile_name                 | default('', true) | trim }}"
+        eff_ipsec_profile_name:           "{{ ipsec_profile_name           | default('', true) | trim }}"
+        eff_acl_name:                     "{{ acl_name                     | default('', true) | trim }}"
+        eff_csr_pl_name:                  "{{ csr_pl_name                  | default('CSR_LIST', true) | trim }}"
+        eff_routing_type:                 "{{ routing_type                 | default('static', true) | lower | trim }}"
+        eff_match_identity_remote_type:   "{{ match_identity_remote_type   | default('address', true) | lower | trim }}"
+        eff_match_identity_remote_value:  "{{ match_identity_remote_value  | default('', true) | trim }}"
+        eff_identity_local_type:          "{{ identity_local_type          | default('', true) | lower | trim }}"
+        eff_identity_local_value:         "{{ identity_local_value         | default('', true) | trim }}"
+        eff_ikev2_lifetime:               "{{ ikev2_lifetime               | default(28800, true) | int }}"
+        eff_wan_interface:                "{{ wan_interface                | default('GigabitEthernet1', true) | trim }}"
+        eff_wan_gateway:                  "{{ wan_gateway                  | default('10.138.1.1', true) | trim }}"
+
+    - name: Build safe descriptor (no spaces/special chars)
+      ansible.builtin.set_fact:
+        safe_desc: "{{ tunnel_desc | regex_replace('[^A-Za-z0-9_]', '_') }}"
+
+    - name: Compute effective names (user value -> fallback)
+      ansible.builtin.set_fact:
+        effective_keyring_name:       "{{ eff_keyring_name       if (eff_keyring_name       | length) > 0 else ('KEYRING_'    ~ safe_desc ~ '_T' ~ tunnel_id) }}"
+        effective_profile_name:       "{{ eff_profile_name       if (eff_profile_name       | length) > 0 else ('PROF_'       ~ safe_desc ~ '_T' ~ tunnel_id) }}"
+        effective_ipsec_profile_name: "{{ eff_ipsec_profile_name if (eff_ipsec_profile_name | length) > 0 else ('IPSEC_PROF_T' ~ tunnel_id) }}"
+        effective_acl_name:           "{{ eff_acl_name           if (eff_acl_name           | length) > 0 else safe_desc }}"
+
+    - name: Show effective values (debug)
+      ansible.builtin.debug:
+        msg:
+          - "host                     = {{ inventory_hostname }}"
+          - "wan_interface            = {{ eff_wan_interface }}"
+          - "wan_gateway              = {{ eff_wan_gateway }}"
+          - "keyring                  = {{ effective_keyring_name }}"
+          - "profile                  = {{ effective_profile_name }}"
+          - "ipsec_profile            = {{ effective_ipsec_profile_name }}"
+          - "acl                      = {{ effective_acl_name }}"
+          - "routing_type             = {{ eff_routing_type }}"
+          - "match identity remote    = {{ eff_match_identity_remote_type }} {{ eff_match_identity_remote_value }}"
+          - "identity local           = {{ eff_identity_local_type }} {{ eff_identity_local_value }}"
+          - "ikev2 lifetime           = {{ eff_ikev2_lifetime }}"
+
+    - name: Push tunnel configuration
+      cisco.ios.ios_config:
+        src: "../templates/add_tunnel.j2"
+        save_when: modified
+
+    - name: Enforce IKEv2 profile children (idempotency safety)
+      cisco.ios.ios_config:
+        parents: "crypto ikev2 profile {{ effective_profile_name }}"
+        lines:
+          - "lifetime {{ eff_ikev2_lifetime }}"
+          - "authentication remote pre-share"
+          - "authentication local pre-share"
+          - "keyring local {{ effective_keyring_name }}"
+          - "dpd 10 5 on-demand"
+
+    - name: Verify — tunnel interface present
+      cisco.ios.ios_command:
+        commands: "show running-config interface Tunnel{{ tunnel_id }}"
+      register: tun_show
+
+    - name: Show tunnel block
+      ansible.builtin.debug:
+        var: tun_show.stdout_lines

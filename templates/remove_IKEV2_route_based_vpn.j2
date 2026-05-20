@@ -1,0 +1,27 @@
+{# ====================================================================
+   Route-based VPN — atomic removal items.
+   BGP / static routes / CSR_LIST cleanup is done by remove_csr.yml as
+   independent tasks (failure-isolated). Keep this template safe & idempotent.
+==================================================================== #}
+
+no interface Tunnel{{ tunnel_id }}
+!
+no ip route {{ remote_peer_ip }} 255.255.255.255 {{ eff_wan_gateway }}
+!
+no ip sla schedule {{ tunnel_id }}
+no ip sla {{ tunnel_id }}
+no track {{ tunnel_id }}
+!
+no crypto ipsec profile {{ effective_ipsec_profile_name }}
+no crypto ikev2 profile  {{ effective_profile_name }}
+no crypto ikev2 keyring  {{ effective_keyring_name }}
+!
+{% if eff_remove_acl | bool and (effective_acl_name | length) > 0 %}
+no ip access-list extended {{ effective_acl_name }}
+{% endif %}
+!
+{% if eff_routing_type == 'dynamic' %}
+no route-map RM_IN_T{{ tunnel_id }}
+no route-map RM_OUT_T{{ tunnel_id }}
+no ip prefix-list PL_IN_T{{ tunnel_id }}
+{% endif %}

@@ -1,0 +1,76 @@
+---
+- name: Remove policy-based IKEv2/IPsec VPN from Cisco CSR
+  hosts: "{{ target_host | default('csr_routers') }}"
+  gather_facts: false
+  connection: ansible.netcommon.network_cli
+
+  vars:
+    keyring_name: ""
+    profile_name: ""
+    acl_name: ""
+    remove_keyring: "true"
+    remove_profile: "true"
+    remove_acl:     "true"
+    crypto_map_desc: ""
+
+  tasks:
+
+    - name: Validate + confirm
+      ansible.builtin.assert:
+        that:
+          - crypto_map_id            is defined and (crypto_map_id | int) > 0
+          - confirm_crypto_map_id    is defined and (confirm_crypto_map_id | int) == (crypto_map_id | int)
+          - remote_peer_ip           is defined and (remote_peer_ip | length) > 0
+          - crypto_map_desc          is defined and (crypto_map_desc | length) > 0
+        fail_msg: "crypto_map_id / confirm_crypto_map_id / remote_peer_ip / crypto_map_desc missing or mismatched."
+
+    - name: Normalise into eff_* facts
+      ansible.builtin.set_fact:
+        eff_crypto_map_name:  "MYMAP"
+        eff_wan_interface:    "{{ wan_interface | default('GigabitEthernet1', true) | trim }}"
+        eff_crypto_map_desc:  "{{ crypto_map_desc | trim }}"
+        eff_keyring_name:     "{{ keyring_name | default('', true) | trim }}"
+        eff_profile_name:     "{{ profile_name | default('', true) | trim }}"
+        eff_acl_name:         "{{ acl_name     | default('', true) | trim }}"
+        eff_remove_keyring:   "{{ remove_keyring | default('true', true) }}"
+        eff_remove_profile:   "{{ remove_profile | default('true', true) }}"
+        eff_remove_acl:       "{{ remove_acl     | default('true', true) }}"
+
+    - name: Safe descriptor + effective names
+      ansible.builtin.set_fact:
+        safe_desc: "{{ eff_crypto_map_desc | regex_replace('[^A-Za-z0-9_]', '_') }}"
+
+    - name: Compute effective names
+      ansible.builtin.set_fact:
+        effective_keyring_name: "{{ eff_keyring_name if (eff_keyring_name | length) > 0 else ('KEYRING_' ~ safe_desc ~ '_M' ~ crypto_map_id) }}"
+        effective_profile_name: "{{ eff_profile_name if (eff_profile_name | length) > 0 else ('PROF_'    ~ safe_desc ~ '_M' ~ crypto_map_id) }}"
+        effective_acl_name:     "{{ eff_acl_name     if (eff_acl_name     | length) > 0 else ('ACL_'     ~ safe_desc) }}"
+
+    # ---- Safety gate: matching crypto-map entry exists with this peer ----
+    - name: Read existing crypto map entry
+      cisco.ios.ios_command:
+        commands: "show running-config | section crypto map {{ eff_crypto_map_name }} {{ crypto_map_id }} "
+      register: cm_exists
+      failed_when: false
+
+    - name: Assert crypto map entry present + peer matches
+      ansible.builtin.assert:
+        that:
+          - "'crypto map ' ~ eff_crypto_map_name ~ ' ' ~ (crypto_map_id|string) in (cm_exists.stdout[0] | default(''))"
+          - "'set peer ' ~ remote_peer_ip in (cm_exists.stdout[0] | default(''))"
+        fail_msg: "crypto map {{ eff_crypto_map_name }} {{ crypto_map_id }} missing or peer != {{ remote_peer_ip }} — refusing."
+
+    - name: Push removal template
+      cisco.ios.ios_config:
+        src: "../templates/remove_IKEV2_policy_based_vpn.j2"
+        save_when: modified
+
+    - name: Verify — entry gone
+      cisco.ios.ios_command:
+        commands: "show running-config | section crypto map {{ eff_crypto_map_name }} {{ crypto_map_id }} "
+      register: cm_after
+      failed_when: false
+
+    - name: Result
+      ansible.builtin.debug:
+        var: cm_after.stdout_lines

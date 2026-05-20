@@ -1,0 +1,122 @@
+{# ====================================================================
+   Route-based IKEv2 / IPsec VPN tunnel
+   Hard-coded:  IKE version 2, VPN mode = route-based (Tunnel iface)
+   Variable:    wan interface, wan gateway (from inventory host_vars)
+==================================================================== #}
+
+{# ---------- Crypto: keyring ---------- #}
+crypto ikev2 keyring {{ effective_keyring_name }}
+ peer {{ safe_desc }}
+  address {{ remote_peer_ip }}
+  pre-shared-key {{ vpn_psk }}
+ exit
+!
+
+{# ---------- Crypto: IKEv2 profile ---------- #}
+crypto ikev2 profile {{ effective_profile_name }}
+{% if eff_match_identity_remote_type == 'address' %}
+ match identity remote address {{ eff_match_identity_remote_value | default(remote_peer_ip, true) }} 255.255.255.255
+{% else %}
+ match identity remote fqdn {{ eff_match_identity_remote_value }}
+{% endif %}
+{% if (eff_identity_local_type | length) > 0 and (eff_identity_local_value | length) > 0 %}
+{% if eff_identity_local_type == 'address' %}
+ identity local address {{ eff_identity_local_value }}
+{% else %}
+ identity local fqdn {{ eff_identity_local_value }}
+{% endif %}
+{% endif %}
+ authentication remote pre-share
+ authentication local pre-share
+ keyring local {{ effective_keyring_name }}
+ lifetime {{ eff_ikev2_lifetime }}
+ dpd 10 5 on-demand
+!
+
+{# ---------- IPsec profile ---------- #}
+crypto ipsec profile {{ effective_ipsec_profile_name }}
+ set transform-set AES256-SHA256
+ set pfs group20
+ set ikev2-profile {{ effective_profile_name }}
+!
+
+{# ---------- Tunnel interface ---------- #}
+interface Tunnel{{ tunnel_id }}
+ description {{ tunnel_desc }}
+ ip address {{ tunnel_local_ip }} {{ tunnel_mask | default('255.255.255.252', true) }}
+ ip mtu 1400
+ ip tcp adjust-mss 1360
+ tunnel source {{ eff_wan_interface }}
+ tunnel mode ipsec ipv4
+ tunnel destination {{ remote_peer_ip }}
+ tunnel protection ipsec profile {{ effective_ipsec_profile_name }}
+ no shutdown
+!
+
+{# ---------- Host route to peer over WAN ---------- #}
+ip route {{ remote_peer_ip }} 255.255.255.255 {{ eff_wan_gateway }}
+!
+
+{# ---------- IP SLA + track for tunnel health ---------- #}
+ip sla {{ tunnel_id }}
+ icmp-echo {{ tunnel_remote_ip }} source-interface Tunnel{{ tunnel_id }}
+ frequency 10
+ timeout 3000
+ip sla schedule {{ tunnel_id }} life forever start-time now
+!
+track {{ tunnel_id }} ip sla {{ tunnel_id }} reachability
+!
+
+{# ====================================================================
+   STATIC routing (eff_routing_type == 'static')
+==================================================================== #}
+{% if eff_routing_type == 'static' %}
+{% for net in static_remote_networks %}
+ip route {{ net.network }} {{ net.mask }} Tunnel{{ tunnel_id }} track {{ tunnel_id }}
+{% endfor %}
+{% endif %}
+
+{# ====================================================================
+   DYNAMIC routing (eff_routing_type == 'dynamic')  — BGP + filters
+==================================================================== #}
+{% if eff_routing_type == 'dynamic' %}
+
+{# Inbound prefix-list (accept from peer) #}
+{% if inbound_prefixes | length > 0 %}
+{% for p in inbound_prefixes %}
+ip prefix-list PL_IN_T{{ tunnel_id }} seq {{ (loop.index * 5) }} permit {{ p }}
+{% endfor %}
+{% endif %}
+
+{# Outbound prefix-list (advertise to peer) — populates shared CSR_LIST #}
+{% if outbound_prefixes | length > 0 %}
+{% for p in outbound_prefixes %}
+ip prefix-list {{ eff_csr_pl_name }} seq {{ tunnel_id + loop.index0 }} permit {{ p }}
+{% endfor %}
+{% endif %}
+
+{# Route-maps #}
+route-map RM_IN_T{{ tunnel_id }} permit 10
+ match ip address prefix-list PL_IN_T{{ tunnel_id }}
+!
+route-map RM_OUT_T{{ tunnel_id }} permit 10
+ match ip address prefix-list {{ eff_csr_pl_name }}
+!
+
+{# BGP neighbor #}
+router bgp {{ local_asn }}
+ neighbor {{ tunnel_remote_ip }} remote-as {{ remote_asn }}
+ neighbor {{ tunnel_remote_ip }} description {{ safe_desc }}
+ neighbor {{ tunnel_remote_ip }} update-source Tunnel{{ tunnel_id }}
+ neighbor {{ tunnel_remote_ip }} timers 10 30
+ address-family ipv4
+  neighbor {{ tunnel_remote_ip }} activate
+  neighbor {{ tunnel_remote_ip }} soft-reconfiguration inbound
+  neighbor {{ tunnel_remote_ip }} route-map RM_IN_T{{ tunnel_id }}  in
+  neighbor {{ tunnel_remote_ip }} route-map RM_OUT_T{{ tunnel_id }} out
+{% for p in outbound_prefixes %}
+  network {{ p.split('/')[0] }} mask {{ ('0.0.0.0/' ~ p.split('/')[1]) | ipaddr('netmask') }}
+{% endfor %}
+ exit-address-family
+!
+{% endif %}

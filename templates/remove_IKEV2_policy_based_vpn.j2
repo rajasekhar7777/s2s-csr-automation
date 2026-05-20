@@ -1,0 +1,13 @@
+{# Policy-based IKEv2 / IPsec VPN — atomic removal #}
+
+no crypto map {{ eff_crypto_map_name }} {{ crypto_map_id }}
+!
+{% if eff_remove_acl | bool %}
+no ip access-list extended {{ effective_acl_name }}
+{% endif %}
+{% if eff_remove_profile | bool %}
+no crypto ikev2 profile {{ effective_profile_name }}
+{% endif %}
+{% if eff_remove_keyring | bool %}
+no crypto ikev2 keyring {{ effective_keyring_name }}
+{% endif %}
