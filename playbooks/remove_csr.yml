@@ -105,7 +105,7 @@
     # ---------- Atomic teardown via template ----------
     - name: Push removal template
       cisco.ios.ios_config:
-        src: "../templates/remove_tunnel.j2"
+        src: "../templates/remove_IKEV2_route_based_vpn.j2"
         save_when: modified
 
     - name: Verify — tunnel gone
