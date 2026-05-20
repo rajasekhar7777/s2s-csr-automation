@@ -61,6 +61,7 @@ ip route {{ remote_peer_ip }} 255.255.255.255 {{ eff_wan_gateway }}
 ip sla {{ tunnel_id }}
  icmp-echo {{ tunnel_remote_ip }} source-interface Tunnel{{ tunnel_id }}
  frequency 10
+ threshold 2000
  timeout 3000
 ip sla schedule {{ tunnel_id }} life forever start-time now
 !
