@@ -1,9 +1,9 @@
-
 {# ====================================================================
    IKEv2 / IPsec route-based VPN tunnel
    Hard-coded:  IKE version 2, route-based mode (Tunnel iface)
    From inventory: eff_wan_interface, eff_wan_gateway (per-host)
    User-tunable: eff_transform_set, eff_pfs_group, eff_ip_mtu, eff_tcp_mss
+   IP SLA + track configured in playbook (explicit parents:) — NOT here.
    ==================================================================== #}
 
 {% set _octet_bits = {'0':0,'128':1,'192':2,'224':3,'240':4,'248':5,'252':6,'254':7,'255':8} %}
@@ -97,15 +97,6 @@ interface Tunnel{{ tunnel_id }}
  no shutdown
 !
 ip route {{ remote_peer_ip }} 255.255.255.255 {{ eff_wan_gateway }} name WAN_ROUTE_{{ safe_desc }}
-!
-ip sla {{ tunnel_id }}
- icmp-echo {{ effective_sla_target }} source-interface Tunnel{{ tunnel_id }}
- threshold 2000
- timeout 3000
- frequency 10
-ip sla schedule {{ tunnel_id }} life forever start-time now
-!
-track {{ tunnel_id }} ip sla {{ tunnel_id }} reachability
 !
 {% if routing_type == 'static' and (ln_entries | length) > 0 %}
 {% for e in ln_entries %}
