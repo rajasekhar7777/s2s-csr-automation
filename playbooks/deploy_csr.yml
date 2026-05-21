@@ -23,9 +23,14 @@
         eff_identity_local_value:        "{{ identity_local_value        | default('',         true) | trim }}"
         eff_wan_interface:               "{{ wan_interface               | default('GigabitEthernet1', true) | trim }}"
         eff_wan_gateway:                 "{{ wan_gateway                 | default('10.138.1.1',       true) | trim }}"
-        # ---- NEW: crypto + tunnel-iface tunables ----
-        eff_transform_set:               "{{ transform_set               | default('AES256-SHA256', true) | trim }}"
-        eff_pfs_group:                   "{{ pfs_group                   | default('group20',       true) | trim }}"
+        # ---- crypto + tunnel-iface tunables (alias-tolerant for transform_set) ----
+        eff_transform_set: >-
+          {{ (transform_set | default('AES256-SHA256', true) | trim | upper)
+             | regex_replace('[\\s_]+', '-')
+             | regex_replace('^AES-?256-?SHA-?256$', 'AES256-SHA256')
+             | regex_replace('^AES-?256-?SHA-?1$',   'AES256-SHA1')
+             | regex_replace('^AES-?256-?SHA$',      'AES256-SHA1') }}
+        eff_pfs_group:                   "{{ pfs_group                   | default('group20',       true) | trim | lower }}"
         eff_ip_mtu:                      "{{ ip_mtu                      | default(1400,            true) | int }}"
         eff_tcp_mss:                     "{{ tcp_mss                     | default(1360,            true) | int }}"
 
@@ -81,33 +86,45 @@
           - local_networks is defined and (local_networks | length) > 0
         fail_msg: "routing_type=static requires local_networks (one 'NETWORK MASK' or CIDR per line)"
 
-    # ---- NEW: Validate transform_set / pfs_group / mtu / mss ----
+    # ---- Validate transform_set / pfs_group / mtu / mss ----
+    - name: Debug — raw vs normalized tunables
+      ansible.builtin.debug:
+        msg:
+          raw_transform_set: "{{ transform_set | default('<undef>') }}"
+          eff_transform_set: "{{ eff_transform_set }}"
+          raw_pfs_group:     "{{ pfs_group     | default('<undef>') }}"
+          eff_pfs_group:     "{{ eff_pfs_group }}"
+          raw_ip_mtu:        "{{ ip_mtu        | default('<undef>') }}"
+          eff_ip_mtu:        "{{ eff_ip_mtu }}"
+          raw_tcp_mss:       "{{ tcp_mss       | default('<undef>') }}"
+          eff_tcp_mss:       "{{ eff_tcp_mss }}"
+
     - name: Validate transform_set
       ansible.builtin.assert:
         that:
           - eff_transform_set in ['AES256-SHA256', 'AES256-SHA1']
-        fail_msg: "transform_set must be 'AES256-SHA256' or 'AES256-SHA1'"
+        fail_msg: "transform_set must be 'AES256-SHA256' or 'AES256-SHA1' (got: '{{ eff_transform_set }}', raw: '{{ transform_set | default('<undef>') }}')"
 
     - name: Validate pfs_group
       ansible.builtin.assert:
         that:
           - (eff_pfs_group | length) > 0
           - eff_pfs_group is match('^group([0-9]+)$')
-        fail_msg: "pfs_group must look like 'groupN' (e.g. group14, group19, group20, group24)"
+        fail_msg: "pfs_group must look like 'groupN' (e.g. group14, group19, group20, group24); got: '{{ eff_pfs_group }}'"
 
     - name: Validate ip_mtu range
       ansible.builtin.assert:
         that:
           - (eff_ip_mtu | int) >= 576
           - (eff_ip_mtu | int) <= 9216
-        fail_msg: "ip_mtu must be between 576 and 9216"
+        fail_msg: "ip_mtu must be between 576 and 9216 (got: {{ eff_ip_mtu }})"
 
     - name: Validate tcp_mss range
       ansible.builtin.assert:
         that:
           - (eff_tcp_mss | int) >= 536
           - (eff_tcp_mss | int) <= ((eff_ip_mtu | int) - 40)
-        fail_msg: "tcp_mss must be >=536 and <= (ip_mtu - 40)"
+        fail_msg: "tcp_mss must be >=536 and <= (ip_mtu - 40); got tcp_mss={{ eff_tcp_mss }}, ip_mtu={{ eff_ip_mtu }}"
 
     # ---------- csr_pl_lege handling ----------
     - name: Validate csr_pl_lege format — blank OR 'le N' (N=0..32)
