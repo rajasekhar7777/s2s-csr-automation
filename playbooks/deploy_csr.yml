@@ -23,16 +23,31 @@
         eff_identity_local_value:        "{{ identity_local_value        | default('',         true) | trim }}"
         eff_wan_interface:               "{{ wan_interface               | default('GigabitEthernet1', true) | trim }}"
         eff_wan_gateway:                 "{{ wan_gateway                 | default('10.138.1.1',       true) | trim }}"
-        # ---- crypto + tunnel-iface tunables (alias-tolerant for transform_set) ----
+        # ---- crypto + tunnel-iface tunables ----
         eff_transform_set: >-
-          {{ (transform_set | default('AES256-SHA256', true) | trim | upper)
+          {{ ((transform_set[0] if (transform_set is iterable and transform_set is not string and (transform_set | length) > 0)
+               else (transform_set | default('AES256-SHA256', true)))
+              | string | trim | upper)
              | regex_replace('[\\s_]+', '-')
              | regex_replace('^AES-?256-?SHA-?256$', 'AES256-SHA256')
              | regex_replace('^AES-?256-?SHA-?1$',   'AES256-SHA1')
              | regex_replace('^AES-?256-?SHA$',      'AES256-SHA1') }}
-        eff_pfs_group:                   "{{ pfs_group                   | default('group20',       true) | trim | lower }}"
-        eff_ip_mtu:                      "{{ ip_mtu                      | default(1400,            true) | int }}"
-        eff_tcp_mss:                     "{{ tcp_mss                     | default(1360,            true) | int }}"
+        eff_pfs_group: "{{ pfs_group | default('group20', true) | string | trim | lower }}"
+        eff_ip_mtu:    "{{ ip_mtu    | default(1400,      true) | int }}"
+        # raw user-supplied tcp_mss (clamped in next step)
+        _raw_tcp_mss:  "{{ tcp_mss   | default(1360,      true) | int }}"
+
+    # ---------- Auto-clamp tcp_mss to (ip_mtu - 40) ----------
+    - name: Compute eff_tcp_mss (auto-clamped to ip_mtu - 40)
+      ansible.builtin.set_fact:
+        eff_tcp_mss: "{{ [(_raw_tcp_mss | int), ((eff_ip_mtu | int) - 40)] | min }}"
+
+    - name: Warn if tcp_mss was clamped
+      when: (_raw_tcp_mss | int) > ((eff_ip_mtu | int) - 40)
+      ansible.builtin.debug:
+        msg: >-
+          NOTICE: tcp_mss={{ _raw_tcp_mss }} exceeded (ip_mtu - 40)={{ (eff_ip_mtu | int) - 40 }};
+          auto-clamped to {{ eff_tcp_mss }}.
 
     # ---------- Validation ----------
     - name: Validate routing_type
@@ -119,12 +134,11 @@
           - (eff_ip_mtu | int) <= 9216
         fail_msg: "ip_mtu must be between 576 and 9216 (got: {{ eff_ip_mtu }})"
 
-    - name: Validate tcp_mss range
+    - name: Validate tcp_mss lower bound
       ansible.builtin.assert:
         that:
           - (eff_tcp_mss | int) >= 536
-          - (eff_tcp_mss | int) <= ((eff_ip_mtu | int) - 40)
-        fail_msg: "tcp_mss must be >=536 and <= (ip_mtu - 40); got tcp_mss={{ eff_tcp_mss }}, ip_mtu={{ eff_ip_mtu }}"
+        fail_msg: "tcp_mss must be >= 536 (got: {{ eff_tcp_mss }})"
 
     # ---------- csr_pl_lege handling ----------
     - name: Validate csr_pl_lege format — blank OR 'le N' (N=0..32)
