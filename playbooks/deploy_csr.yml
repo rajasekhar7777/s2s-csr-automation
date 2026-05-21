@@ -34,10 +34,8 @@
              | regex_replace('^AES-?256-?SHA$',      'AES256-SHA1') }}
         eff_pfs_group: "{{ pfs_group | default('group20', true) | string | trim | lower }}"
         eff_ip_mtu:    "{{ ip_mtu    | default(1400,      true) | int }}"
-        # raw user-supplied tcp_mss (clamped in next step)
         _raw_tcp_mss:  "{{ tcp_mss   | default(1360,      true) | int }}"
 
-    # ---------- Auto-clamp tcp_mss to (ip_mtu - 40) ----------
     - name: Compute eff_tcp_mss (auto-clamped to ip_mtu - 40)
       ansible.builtin.set_fact:
         eff_tcp_mss: "{{ [(_raw_tcp_mss | int), ((eff_ip_mtu | int) - 40)] | min }}"
@@ -101,7 +99,6 @@
           - local_networks is defined and (local_networks | length) > 0
         fail_msg: "routing_type=static requires local_networks (one 'NETWORK MASK' or CIDR per line)"
 
-    # ---- Validate transform_set / pfs_group / mtu / mss ----
     - name: Debug — raw vs normalized tunables
       ansible.builtin.debug:
         msg:
@@ -125,7 +122,7 @@
         that:
           - (eff_pfs_group | length) > 0
           - eff_pfs_group is match('^group([0-9]+)$')
-        fail_msg: "pfs_group must look like 'groupN' (e.g. group14, group19, group20, group24); got: '{{ eff_pfs_group }}'"
+        fail_msg: "pfs_group must look like 'groupN' (got: '{{ eff_pfs_group }}')"
 
     - name: Validate ip_mtu range
       ansible.builtin.assert:
@@ -255,32 +252,57 @@
           pl_existing_seqs:            "{{ pl_existing_seqs }}"
           pl_next_seq:                 "{{ pl_next_seq }}"
           pl_le_value:                 "{{ pl_le_value }}"
-          match_identity_remote_type:  "{{ eff_match_identity_remote_type }}"
-          match_identity_remote_value: "{{ eff_match_identity_remote_value }}"
-          identity_local_type:         "{{ eff_identity_local_type }}"
-          identity_local_value:        "{{ eff_identity_local_value }}"
           transform_set:               "{{ eff_transform_set }}"
           pfs_group:                   "{{ eff_pfs_group }}"
           ip_mtu:                      "{{ eff_ip_mtu }}"
           tcp_mss:                     "{{ eff_tcp_mss }}"
 
   tasks:
-    - name: Push generated config
+    - name: Push generated config (template)
       cisco.ios.ios_config:
         src: "../templates/IKEV2_route_based_vpn.j2"
       register: cfg
       vars:
         routing_type: "{{ eff_routing_type }}"
 
+    # ---------- IP SLA probe (explicit nested parents — IOS-safe) ----------
+    - name: Configure IP SLA probe (icmp-echo + sub-mode params)
+      cisco.ios.ios_config:
+        parents:
+          - "ip sla {{ tunnel_id }}"
+          - "icmp-echo {{ effective_sla_target }} source-interface Tunnel{{ tunnel_id }}"
+        lines:
+          - "threshold 2000"
+          - "timeout 3000"
+          - "frequency 10"
+      register: cfg_sla
+
+    - name: Schedule IP SLA + reachability track
+      cisco.ios.ios_config:
+        lines:
+          - "ip sla schedule {{ tunnel_id }} life forever start-time now"
+          - "track {{ tunnel_id }} ip sla {{ tunnel_id }} reachability"
+      register: cfg_sla_sched
+
     - name: Save startup-config
-      when: cfg.changed
+      when: cfg.changed or cfg_sla.changed or cfg_sla_sched.changed
       cisco.ios.ios_command:
         commands: write memory
 
-    - name: Show pushed lines
+    - name: Show pushed lines (template)
       when: cfg.changed
       ansible.builtin.debug:
         var: cfg.commands
+
+    - name: Show pushed lines (SLA probe)
+      when: cfg_sla.changed
+      ansible.builtin.debug:
+        var: cfg_sla.commands
+
+    - name: Show pushed lines (SLA schedule + track)
+      when: cfg_sla_sched.changed
+      ansible.builtin.debug:
+        var: cfg_sla_sched.commands
 
   post_tasks:
     - name: Verify — tunnel interface
@@ -299,6 +321,12 @@
       cisco.ios.ios_command:
         commands: "show running-config | section crypto ipsec profile {{ effective_ipsec_profile_name }}"
       register: vfy_ipsec
+      changed_when: false
+
+    - name: Verify — IP SLA
+      cisco.ios.ios_command:
+        commands: "show running-config | section ip sla {{ tunnel_id }}"
+      register: vfy_sla
       changed_when: false
 
     - name: Verify — BGP section
@@ -331,6 +359,10 @@
     - name: Print verification — IPsec profile
       ansible.builtin.debug:
         msg: "{{ vfy_ipsec.stdout[0].splitlines() }}"
+
+    - name: Print verification — IP SLA
+      ansible.builtin.debug:
+        msg: "{{ vfy_sla.stdout[0].splitlines() }}"
 
     - name: Print verification — BGP
       ansible.builtin.debug:
