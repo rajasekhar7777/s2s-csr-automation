@@ -1,7 +1,9 @@
+
 {# ====================================================================
    IKEv2 / IPsec route-based VPN tunnel
    Hard-coded:  IKE version 2, route-based mode (Tunnel iface)
    From inventory: eff_wan_interface, eff_wan_gateway (per-host)
+   User-tunable: eff_transform_set, eff_pfs_group, eff_ip_mtu, eff_tcp_mss
    ==================================================================== #}
 
 {% set _octet_bits = {'0':0,'128':1,'192':2,'224':3,'240':4,'248':5,'252':6,'254':7,'255':8} %}
@@ -58,12 +60,18 @@ crypto ikev2 profile {{ effective_profile_name }}
  lifetime {{ eff_ikev2_lifetime }}
  dpd 10 5 on-demand
 !
+{% if eff_transform_set == 'AES256-SHA1' %}
+crypto ipsec transform-set AES256-SHA1 esp-aes 256 esp-sha-hmac
+ mode tunnel
+!
+{% else %}
 crypto ipsec transform-set AES256-SHA256 esp-aes 256 esp-sha256-hmac
  mode tunnel
 !
+{% endif %}
 crypto ipsec profile {{ effective_ipsec_profile_name }}
- set transform-set AES256-SHA256
- set pfs group20
+ set transform-set {{ eff_transform_set }}
+ set pfs {{ eff_pfs_group }}
  set ikev2-profile {{ effective_profile_name }}
 !
 {% if acl_entries is defined and (acl_entries | length) > 0 %}
@@ -77,8 +85,8 @@ ip access-list extended {{ effective_acl_name }}
 interface Tunnel{{ tunnel_id }}
  description {{ eff_tunnel_desc }}
  ip address {{ tunnel_local_ip }} 255.255.255.252
- ip mtu 1400
- ip tcp adjust-mss 1360
+ ip mtu {{ eff_ip_mtu }}
+ ip tcp adjust-mss {{ eff_tcp_mss }}
  tunnel source {{ eff_wan_interface }}
  tunnel mode ipsec ipv4
  tunnel destination {{ remote_peer_ip }}
@@ -92,6 +100,8 @@ ip route {{ remote_peer_ip }} 255.255.255.255 {{ eff_wan_gateway }} name WAN_ROU
 !
 ip sla {{ tunnel_id }}
  icmp-echo {{ effective_sla_target }} source-interface Tunnel{{ tunnel_id }}
+ threshold 2000
+ timeout 3000
  frequency 10
 ip sla schedule {{ tunnel_id }} life forever start-time now
 !
