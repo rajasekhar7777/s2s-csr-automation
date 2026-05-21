@@ -5,7 +5,7 @@
 
   pre_tasks:
 
-    # ---------- Normalize inputs into eff_* facts (extra-vars-safe) ----------
+    # ---------- Normalize inputs into eff_* facts ----------
     - name: Normalize critical inputs into eff_* facts
       ansible.builtin.set_fact:
         eff_tunnel_desc:                 "{{ tunnel_desc                 | default('',         true) | trim }}"
@@ -23,7 +23,6 @@
         eff_identity_local_value:        "{{ identity_local_value        | default('',         true) | trim }}"
         eff_wan_interface:               "{{ wan_interface               | default('GigabitEthernet1', true) | trim }}"
         eff_wan_gateway:                 "{{ wan_gateway                 | default('10.138.1.1',       true) | trim }}"
-        # ---- crypto + tunnel-iface tunables ----
         eff_transform_set: >-
           {{ ((transform_set[0] if (transform_set is iterable and transform_set is not string and (transform_set | length) > 0)
                else (transform_set | default('AES256-SHA256', true)))
@@ -97,7 +96,7 @@
       ansible.builtin.assert:
         that:
           - local_networks is defined and (local_networks | length) > 0
-        fail_msg: "routing_type=static requires local_networks (one 'NETWORK MASK' or CIDR per line)"
+        fail_msg: "routing_type=static requires local_networks"
 
     - name: Debug — raw vs normalized tunables
       ansible.builtin.debug:
@@ -265,27 +264,32 @@
       vars:
         routing_type: "{{ eff_routing_type }}"
 
-    # ---------- IP SLA probe (explicit nested parents — IOS-safe) ----------
-    - name: Configure IP SLA probe (icmp-echo + sub-mode params)
+    # ---------- IP SLA probe — force-rebuild, sequential, diff-proof ----------
+    - name: Wipe any pre-existing IP SLA shell (safe even if absent)
       cisco.ios.ios_config:
-        parents:
+        lines:
+          - "no ip sla {{ tunnel_id }}"
+          - "no track {{ tunnel_id }}"
+        match: none
+      register: cfg_sla_wipe
+
+    - name: Configure IP SLA probe + schedule + track (sequential)
+      cisco.ios.ios_config:
+        lines:
           - "ip sla {{ tunnel_id }}"
           - "icmp-echo {{ effective_sla_target }} source-interface Tunnel{{ tunnel_id }}"
-        lines:
           - "threshold 2000"
           - "timeout 3000"
           - "frequency 10"
-      register: cfg_sla
-
-    - name: Schedule IP SLA + reachability track
-      cisco.ios.ios_config:
-        lines:
+          - "exit"
+          - "exit"
           - "ip sla schedule {{ tunnel_id }} life forever start-time now"
           - "track {{ tunnel_id }} ip sla {{ tunnel_id }} reachability"
-      register: cfg_sla_sched
+        match: none
+      register: cfg_sla
 
     - name: Save startup-config
-      when: cfg.changed or cfg_sla.changed or cfg_sla_sched.changed
+      when: cfg.changed or cfg_sla.changed or cfg_sla_wipe.changed
       cisco.ios.ios_command:
         commands: write memory
 
@@ -294,15 +298,10 @@
       ansible.builtin.debug:
         var: cfg.commands
 
-    - name: Show pushed lines (SLA probe)
+    - name: Show pushed lines (SLA)
       when: cfg_sla.changed
       ansible.builtin.debug:
         var: cfg_sla.commands
-
-    - name: Show pushed lines (SLA schedule + track)
-      when: cfg_sla_sched.changed
-      ansible.builtin.debug:
-        var: cfg_sla_sched.commands
 
   post_tasks:
     - name: Verify — tunnel interface
