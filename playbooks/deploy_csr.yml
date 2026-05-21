@@ -1,4 +1,3 @@
-
 ---
 - name: Deploy IKEv2 route-based VPN tunnel on Cisco CSR
   hosts: "{{ target_host | default('csr_routers') }}"
@@ -123,9 +122,17 @@
       loop: "{{ pl_mask_bits | default([]) }}"
 
     # ---------- Derived names ----------
-    - name: Derive safe_desc
+    - name: Derive safe_desc (sanitize tunnel_desc)
       ansible.builtin.set_fact:
         safe_desc: "{{ eff_tunnel_desc | regex_replace('\\s+', '_') | regex_replace('[^A-Za-z0-9_]', '_') }}"
+
+    # ---- Sanitize user-supplied object names (replace spaces / specials with _) ----
+    - name: Sanitize user-supplied object names
+      ansible.builtin.set_fact:
+        eff_keyring_name:       "{{ eff_keyring_name       | regex_replace('[^A-Za-z0-9_]', '_') }}"
+        eff_profile_name:       "{{ eff_profile_name       | regex_replace('[^A-Za-z0-9_]', '_') }}"
+        eff_ipsec_profile_name: "{{ eff_ipsec_profile_name | regex_replace('[^A-Za-z0-9_]', '_') }}"
+        eff_acl_name:           "{{ eff_acl_name           | regex_replace('[^A-Za-z0-9_]', '_') }}"
 
     - name: Compute fallback names if blank
       ansible.builtin.set_fact:
@@ -166,25 +173,25 @@
     - name: Show derived facts
       ansible.builtin.debug:
         msg:
-          host:                "{{ inventory_hostname }}"
-          wan_interface:       "{{ eff_wan_interface }}"
-          wan_gateway:         "{{ eff_wan_gateway }}"
-          tunnel_id:           "{{ tunnel_id }}"
-          tunnel_desc:         "{{ eff_tunnel_desc }}"
-          safe_desc:           "{{ safe_desc }}"
-          routing_type:        "{{ eff_routing_type }}"
-          tunnel_peer_ip:      "{{ tunnel_peer_ip }}"
-          effective_sla_target: "{{ effective_sla_target }}"
-          keyring_name:        "{{ effective_keyring_name }}"
-          profile_name:        "{{ effective_profile_name }}"
-          ipsec_profile_name:  "{{ effective_ipsec_profile_name }}"
-          acl_name:            "{{ effective_acl_name }}"
-          ikev2_lifetime:      "{{ eff_ikev2_lifetime }}"
-          local_asn:           "{{ eff_local_asn }}"
-          csr_pl_name:         "{{ eff_csr_pl_name }}"
-          pl_existing_seqs:    "{{ pl_existing_seqs }}"
-          pl_next_seq:         "{{ pl_next_seq }}"
-          pl_le_value:         "{{ pl_le_value }}"
+          host:                        "{{ inventory_hostname }}"
+          wan_interface:               "{{ eff_wan_interface }}"
+          wan_gateway:                 "{{ eff_wan_gateway }}"
+          tunnel_id:                   "{{ tunnel_id }}"
+          tunnel_desc:                 "{{ eff_tunnel_desc }}"
+          safe_desc:                   "{{ safe_desc }}"
+          routing_type:                "{{ eff_routing_type }}"
+          tunnel_peer_ip:              "{{ tunnel_peer_ip }}"
+          effective_sla_target:        "{{ effective_sla_target }}"
+          keyring_name:                "{{ effective_keyring_name }}"
+          profile_name:                "{{ effective_profile_name }}"
+          ipsec_profile_name:          "{{ effective_ipsec_profile_name }}"
+          acl_name:                    "{{ effective_acl_name }}"
+          ikev2_lifetime:              "{{ eff_ikev2_lifetime }}"
+          local_asn:                   "{{ eff_local_asn }}"
+          csr_pl_name:                 "{{ eff_csr_pl_name }}"
+          pl_existing_seqs:            "{{ pl_existing_seqs }}"
+          pl_next_seq:                 "{{ pl_next_seq }}"
+          pl_le_value:                 "{{ pl_le_value }}"
           match_identity_remote_type:  "{{ eff_match_identity_remote_type }}"
           match_identity_remote_value: "{{ eff_match_identity_remote_value }}"
           identity_local_type:         "{{ eff_identity_local_type }}"
@@ -196,7 +203,6 @@
         src: "../templates/IKEV2_route_based_vpn.j2"
       register: cfg
       vars:
-        # Pass normalized routing_type through so template sees it as `routing_type`
         routing_type: "{{ eff_routing_type }}"
 
     - name: Save startup-config
